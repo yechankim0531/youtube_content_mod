@@ -19,19 +19,34 @@ let categories = [
     {
         id: 'sports',
         title: 'Sports',
-        keywords: ['baseball', 'golf', 'formula 1', 'tennis'],
+        keywords: [
+            { keyword: 'baseball', weight: 50 },
+            { keyword: 'golf', weight: 25 },
+            { keyword: 'formula 1', weight: 15 },
+            { keyword: 'tennis', weight: 10 }
+        ],
         color: '#ff6b6b'
     },
     {
         id: 'music',
         title: 'Music',
-        keywords: ['rock', 'jazz', 'classical', 'pop'],
+        keywords: [
+            { keyword: 'rock', weight: 40 },
+            { keyword: 'jazz', weight: 30 },
+            { keyword: 'classical', weight: 20 },
+            { keyword: 'pop', weight: 10 }
+        ],
         color: '#4ecdc4'
     },
     {
         id: 'tech',
         title: 'Technology',
-        keywords: ['programming', 'ai', 'gadgets', 'software'],
+        keywords: [
+            { keyword: 'programming', weight: 40 },
+            { keyword: 'ai', weight: 30 },
+            { keyword: 'gadgets', weight: 20 },
+            { keyword: 'software', weight: 10 }
+        ],
         color: '#45b7d1'
     }
 ];
@@ -55,6 +70,19 @@ app.post('/api/categories', (req, res) => {
         if (!title || !keywords || !Array.isArray(keywords) || keywords.length === 0) {
             return res.status(400).json({ error: 'Title and keywords array are required', received: req.body });
         }
+        
+        // Validate keywords structure - can be either strings or objects with keyword and weight
+        const validatedKeywords = keywords.map((kw, index) => {
+            if (typeof kw === 'string') {
+                // Convert string to weighted object with default weight
+                return { keyword: kw, weight: 100 / keywords.length };
+            } else if (typeof kw === 'object' && kw.keyword && typeof kw.weight === 'number') {
+                return { keyword: kw.keyword, weight: kw.weight };
+            } else {
+                throw new Error(`Invalid keyword format at index ${index}. Expected string or {keyword: string, weight: number}`);
+            }
+        });
+        
         const id = title.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
         if (categories.find(cat => cat.id === id)) {
             return res.status(400).json({ error: 'Category with this title already exists' });
@@ -62,7 +90,7 @@ app.post('/api/categories', (req, res) => {
         const newCategory = {
             id,
             title,
-            keywords,
+            keywords: validatedKeywords,
             color: color || '#667eea'
         };
         categories.push(newCategory);
@@ -99,7 +127,20 @@ app.put('/api/categories/:id', (req, res) => {
             return res.status(404).json({ error: 'Category not found' });
         }
         if (title) categories[categoryIndex].title = title;
-        if (keywords && Array.isArray(keywords)) categories[categoryIndex].keywords = keywords;
+        if (keywords && Array.isArray(keywords)) {
+            // Validate keywords structure - can be either strings or objects with keyword and weight
+            const validatedKeywords = keywords.map((kw, index) => {
+                if (typeof kw === 'string') {
+                    // Convert string to weighted object with default weight
+                    return { keyword: kw, weight: 100 / keywords.length };
+                } else if (typeof kw === 'object' && kw.keyword && typeof kw.weight === 'number') {
+                    return { keyword: kw.keyword, weight: kw.weight };
+                } else {
+                    throw new Error(`Invalid keyword format at index ${index}. Expected string or {keyword: string, weight: number}`);
+                }
+            });
+            categories[categoryIndex].keywords = validatedKeywords;
+        }
         if (color) categories[categoryIndex].color = color;
         cache.clear();
         return res.json({ category: categories[categoryIndex], message: 'Category updated successfully' });
@@ -133,13 +174,22 @@ app.get('/api/search/category/:id', async (req, res) => {
             });
         }
         let allVideos = [];
-        for (const keyword of category.keywords) {
+        
+        // Calculate total weight for percentage calculations
+        const totalWeight = category.keywords.reduce((sum, kw) => sum + kw.weight, 0);
+        
+        for (const keywordObj of category.keywords) {
             try {
+                // Calculate how many videos to fetch for this keyword based on its weight
+                const keywordWeight = keywordObj.weight;
+                const keywordPercentage = keywordWeight / totalWeight;
+                const videosForKeyword = Math.ceil(maxResults * keywordPercentage);
+                
                 const response = await axios.get(`${YOUTUBE_API_BASE_URL}/search`, {
                     params: {
                         part: 'snippet',
-                        q: keyword,
-                        maxResults: Math.ceil(maxResults / category.keywords.length),
+                        q: keywordObj.keyword,
+                        maxResults: videosForKeyword,
                         type: 'video',
                         videoDuration: 'medium',
                         order: 'relevance',
@@ -174,12 +224,13 @@ app.get('/api/search/category/:id', async (req, res) => {
                             channelTitle: video.snippet.channelTitle,
                             publishedAt: video.snippet.publishedAt,
                             duration: video.contentDetails.duration,
-                            keyword: keyword
+                            keyword: keywordObj.keyword,
+                            weight: keywordObj.weight
                         }));
                     allVideos.push(...filteredVideos);
                 }
             } catch (keywordError) {
-                console.error(`Error searching for keyword "${keyword}":`, keywordError.response?.data || keywordError.message);
+                console.error(`Error searching for keyword "${keywordObj.keyword}":`, keywordError.response?.data || keywordError.message);
             }
         }
         const uniqueVideos = allVideos.filter((video, index, self) => 
@@ -190,7 +241,7 @@ app.get('/api/search/category/:id', async (req, res) => {
         const result = {
             videos: finalVideos,
             totalFound: uniqueVideos.length,
-            keywords: category.keywords,
+            keywords: category.keywords.map(k => k.keyword),
             category: category
         };
         cache.set(cacheKey, {
